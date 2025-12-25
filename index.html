@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KenKen for Grey</title>
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+    }
+    canvas {
+        display: block;
+    }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d', {
+    alpha: false,
+});
+let scale = 1;
+
+// Button state
+const buttons = [];
+
+// Game state
+let selectedCell = null;
+let gridState = Array(8).fill(null).map(() => Array(8).fill(0));
+let errorCells = new Set(); // Store cells with errors as "row,col" strings
+let boardX = 0;
+let boardY = 0;
+let boardSize = 0;
+let cellSize = 0;
+
+// Solution grid (the correct answer)
+let solutionGrid = [];
+
+// KenKen groups (cages)
+let cages = [];
+
+// Generate a random valid Latin Square (each row/column has 1-8 exactly once)
+function generateLatinSquare() {
+    const grid = [];
+    const size = 8;
+    
+    // Start with a simple pattern and shuffle
+    for (let i = 0; i < size; i++) {
+        const row = [];
+        for (let j = 0; j < size; j++) {
+            row.push(((i + j) % size) + 1);
+        }
+        grid.push(row);
+    }
+    
+    // Shuffle rows within bands and columns within stacks for more randomness
+    for (let i = 0; i < 50; i++) {
+        // Random row swap
+        const r1 = Math.floor(Math.random() * size);
+        const r2 = Math.floor(Math.random() * size);
+        [grid[r1], grid[r2]] = [grid[r2], grid[r1]];
+        
+        // Random column swap
+        const c1 = Math.floor(Math.random() * size);
+        const c2 = Math.floor(Math.random() * size);
+        for (let row = 0; row < size; row++) {
+            [grid[row][c1], grid[row][c2]] = [grid[row][c2], grid[row][c1]];
+        }
+    }
+    
+    return grid;
+}
+
+// Generate random cages for the puzzle
+function generateCages(solution) {
+    const size = 8;
+    const visited = Array(size).fill(null).map(() => Array(size).fill(false));
+    const newCages = [];
+    
+    for (let row = 0; row < size; row++) {
+        for (let col = 0; col < size; col++) {
+            if (visited[row][col]) continue;
+            
+            // Start a new cage
+            const cage = {
+                cells: [[row, col]],
+                operation: "",
+                solution: [solution[row][col]]
+            };
+            visited[row][col] = true;
+            
+            // Randomly decide cage size (1-4 cells)
+            const targetSize = Math.floor(Math.random() * 3) + 1; // 1-3 cells
+            
+            // Try to add adjacent cells
+            while (cage.cells.length < targetSize) {
+                const possibleCells = [];
+                
+                for (const [r, c] of cage.cells) {
+                    // Check all 4 adjacent cells
+                    const adjacent = [
+                        [r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]
+                    ];
+                    
+                    for (const [nr, nc] of adjacent) {
+                        if (nr >= 0 && nr < size && nc >= 0 && nc < size && 
+                            !visited[nr][nc] && 
+                            !cage.cells.some(([cr, cc]) => cr === nr && cc === nc)) {
+                            possibleCells.push([nr, nc]);
+                        }
+                    }
+                }
+                
+                if (possibleCells.length === 0) break;
+                
+                // Pick a random adjacent cell
+                const [newR, newC] = possibleCells[Math.floor(Math.random() * possibleCells.length)];
+                cage.cells.push([newR, newC]);
+                cage.solution.push(solution[newR][newC]);
+                visited[newR][newC] = true;
+            }
+            
+            // Generate operation for this cage
+            cage.operation = generateOperation(cage.solution);
+            newCages.push(cage);
+        }
+    }
+    
+    return newCages;
+}
+
+// Generate an operation string for a cage
+function generateOperation(values) {
+    if (values.length === 1) {
+        // Single cell - just show the number
+        return String(values[0]);
+    }
+    
+    if (values.length === 2) {
+        // Two cells - can use any operation
+        const ops = ['+', '−', '×', '÷'];
+        const op = ops[Math.floor(Math.random() * ops.length)];
+        
+        switch (op) {
+            case '+':
+                return `${values[0] + values[1]}+`;
+            case '−':
+                return `${Math.abs(values[0] - values[1])}−`;
+            case '×':
+                return `${values[0] * values[1]}×`;
+            case '÷':
+                const max = Math.max(values[0], values[1]);
+                const min = Math.min(values[0], values[1]);
+                if (max % min === 0) {
+                    return `${max / min}÷`;
+                } else {
+                    // If not evenly divisible, use a different operation
+                    return `${values[0] + values[1]}+`;
+                }
+        }
+    }
+    
+    // Three or more cells - use addition or multiplication
+    if (Math.random() < 0.5) {
+        // Addition
+        const sum = values.reduce((a, b) => a + b, 0);
+        return `${sum}+`;
+    } else {
+        // Multiplication
+        const product = values.reduce((a, b) => a * b, 1);
+        return `${product}×`;
+    }
+}
+
+// Initialize puzzle
+function initializePuzzle() {
+    solutionGrid = generateLatinSquare();
+    cages = generateCages(solutionGrid);
+    gridState = Array(8).fill(null).map(() => Array(8).fill(0));
+    selectedCell = null;
+    errorCells.clear();
+    console.log("New puzzle generated!");
+}
+
+function screenDimension() {
+    const isVertical = window.innerWidth < window.innerHeight;
+    if (isVertical) {
+        return { x: 390, y: 844 }; // Standard phone dimension
+    }
+    return { x: 1920, y: 1080 };
+}
+function setCanvasSize() {
+    canvas.width = Math.round(window.innerWidth * window.devicePixelRatio);
+    canvas.height = Math.round(window.innerHeight * window.devicePixelRatio);
+    canvas.style.width = `${Math.round(
+        canvas.width / window.devicePixelRatio,
+    )}px`;
+    canvas.style.height = `${Math.round(
+        canvas.height / window.devicePixelRatio,
+    )}px`;
+    const dimension = screenDimension();
+    const x = Math.round((canvas.width / dimension.x) * 10) / 10;
+    const y = Math.round((canvas.height / dimension.y) * 10) / 10;
+    scale = Math.min(x, y);
+}
+setCanvasSize();
+window.addEventListener('resize', setCanvasSize);
+function canvasWidth() {
+    return Math.round(canvas.width / scale);
+}
+function canvasHeight() {
+    return Math.round(canvas.height / scale);
+}
+function drawRect({
+    x,
+    y,
+    w,
+    h,
+    fill,
+    borderColor,
+    borderWidth,
+    opacity = 1,
+}) {
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.translate(x, y);
+    if (fill) {
+        ctx.fillStyle = fill;
+        ctx.fillRect(0, 0, w, h);
+    }
+    if (borderColor) {
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = borderWidth ?? 0;
+        ctx.strokeRect(0, 0, w, h);
+    }
+    ctx.restore();
+}
+function drawText({
+    text,
+    color,
+    x,
+    y,
+    size,
+    opacity = 1,
+    align = 'left',
+    baseline = 'alphabetic',
+}) {
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.font = `${Math.round(size)}px sans-serif`;
+    ctx.fillStyle = color;
+    ctx.textAlign = align;
+    ctx.textBaseline = baseline;
+    ctx.fillText(text, x, y);
+    ctx.restore();
+}
+function measureText({
+    text,
+    size,
+}) {
+    ctx.font = `${size}px sans-serif`;
+    return ctx.measureText(text);
+}
+
+function drawGrid({
+    x,
+    y,
+    size,
+    gridSize = 8,
+    lineWidth = 1,
+    lineColor = "#cccccc",
+    backgroundColor = "white"
+}) {
+    boardX = x;
+    boardY = y;
+    boardSize = size;
+    cellSize = size / gridSize;
+    
+    // Draw background
+    drawRect({
+        x: x,
+        y: y,
+        w: size,
+        h: size,
+        fill: backgroundColor
+    });
+    
+    // Draw cell values
+    for (let row = 0; row < gridSize; row++) {
+        for (let col = 0; col < gridSize; col++) {
+            const cellX = x + col * cellSize;
+            const cellY = y + row * cellSize;
+            const cellKey = `${row},${col}`;
+            
+            // Highlight error cells in red
+            if (errorCells.has(cellKey)) {
+                drawRect({
+                    x: cellX,
+                    y: cellY,
+                    w: cellSize,
+                    h: cellSize,
+                    fill: "#ff5252",
+                    opacity: 0.4
+                });
+            }
+            
+            // Highlight selected cell
+            if (selectedCell && selectedCell.row === row && selectedCell.col === col) {
+                drawRect({
+                    x: cellX,
+                    y: cellY,
+                    w: cellSize,
+                    h: cellSize,
+                    fill: "#ffeb3b",
+                    opacity: 0.5
+                });
+            }
+            
+            // Draw number if present
+            if (gridState[row][col] > 0) {
+                const numberSize = cellSize * 0.6;
+                drawText({
+                    text: String(gridState[row][col]),
+                    color: "black",
+                    x: cellX + cellSize / 2,
+                    y: cellY + cellSize / 2,
+                    size: numberSize,
+                    align: 'center',
+                    baseline: 'middle'
+                });
+            }
+        }
+    }
+    
+    // Draw cage outlines
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "black";
+    
+    for (const cage of cages) {
+        // For each cell in the cage, determine which edges to draw
+        for (const [row, col] of cage.cells) {
+            const cellX = x + col * cellSize;
+            const cellY = y + row * cellSize;
+            
+            // Check top edge
+            const hasTop = !cage.cells.some(([r, c]) => r === row - 1 && c === col);
+            if (hasTop) {
+                ctx.beginPath();
+                ctx.moveTo(cellX, cellY);
+                ctx.lineTo(cellX + cellSize, cellY);
+                ctx.stroke();
+            }
+            
+            // Check bottom edge
+            const hasBottom = !cage.cells.some(([r, c]) => r === row + 1 && c === col);
+            if (hasBottom) {
+                ctx.beginPath();
+                ctx.moveTo(cellX, cellY + cellSize);
+                ctx.lineTo(cellX + cellSize, cellY + cellSize);
+                ctx.stroke();
+            }
+            
+            // Check left edge
+            const hasLeft = !cage.cells.some(([r, c]) => r === row && c === col - 1);
+            if (hasLeft) {
+                ctx.beginPath();
+                ctx.moveTo(cellX, cellY);
+                ctx.lineTo(cellX, cellY + cellSize);
+                ctx.stroke();
+            }
+            
+            // Check right edge
+            const hasRight = !cage.cells.some(([r, c]) => r === row && c === col + 1);
+            if (hasRight) {
+                ctx.beginPath();
+                ctx.moveTo(cellX + cellSize, cellY);
+                ctx.lineTo(cellX + cellSize, cellY + cellSize);
+                ctx.stroke();
+            }
+        }
+        
+        // Draw operation label in top-left cell of cage
+        const [firstRow, firstCol] = cage.cells[0];
+        const labelX = x + firstCol * cellSize + 3;
+        const labelY = y + firstRow * cellSize + cellSize * 0.2;
+        const labelSize = cellSize * 0.2;
+        
+        drawText({
+            text: cage.operation,
+            color: "black",
+            x: labelX,
+            y: labelY,
+            size: labelSize,
+            align: 'left',
+            baseline: 'top'
+        });
+    }
+    
+    ctx.restore();
+    
+    // Draw light grid lines
+    ctx.save();
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = lineWidth;
+    
+    // Draw vertical lines
+    for (let i = 0; i <= gridSize; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x + i * cellSize, y);
+        ctx.lineTo(x + i * cellSize, y + size);
+        ctx.stroke();
+    }
+    
+    // Draw horizontal lines
+    for (let i = 0; i <= gridSize; i++) {
+        ctx.beginPath();
+        ctx.moveTo(x, y + i * cellSize);
+        ctx.lineTo(x + size, y + i * cellSize);
+        ctx.stroke();
+    }
+    
+    ctx.restore();
+}
+
+function drawButton({
+    x,
+    y,
+    w,
+    h,
+    label,
+    labelSize = 30,
+}) {
+    drawRect({
+        x: x,
+        y: y,
+        w: w,
+        h: h,
+        fill: "white",
+        borderColor: "black",
+        borderWidth: 2
+    });
+    
+    drawText({
+        text: label,
+        color: "black",
+        x: x + w / 2,
+        y: y + h / 2,
+        size: labelSize,
+        align: 'center',
+        baseline: 'middle'
+    });
+}
+
+function drawButtons({
+    startX,
+    startY,
+    buttonWidth,
+    buttonHeight,
+    buttonSpacing,
+    buttonsPerRow,
+    labelSize,
+}) {
+    // Clear previous buttons
+    buttons.length = 0;
+    
+    for (let i = 0; i < 8; i++) {
+        const row = Math.floor(i / buttonsPerRow);
+        const col = i % buttonsPerRow;
+        
+        const buttonX = startX + col * (buttonWidth + buttonSpacing);
+        const buttonY = startY + row * (buttonHeight + buttonSpacing);
+        
+        // Store button bounds for hit detection
+        buttons.push({
+            x: buttonX,
+            y: buttonY,
+            w: buttonWidth,
+            h: buttonHeight,
+            label: String(i + 1),
+            type: 'number'
+        });
+        
+        drawButton({
+            x: buttonX,
+            y: buttonY,
+            w: buttonWidth,
+            h: buttonHeight,
+            label: String(i + 1),
+            labelSize: labelSize
+        });
+    }
+}
+
+function drawActionButton({
+    x,
+    y,
+    w,
+    h,
+    label,
+    type,
+    labelSize
+}) {
+    buttons.push({
+        x: x,
+        y: y,
+        w: w,
+        h: h,
+        label: label,
+        type: type
+    });
+    
+    drawButton({
+        x: x,
+        y: y,
+        w: w,
+        h: h,
+        label: label,
+        labelSize: labelSize
+    });
+}
+
+function checkSolution() {
+    // Check if all cells are filled
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            if (gridState[row][col] === 0) {
+                alert("Please fill all cells!");
+                return;
+            }
+        }
+    }
+    
+    // Check rows - each row must have 1-8 exactly once
+    for (let row = 0; row < 8; row++) {
+        const rowSet = new Set(gridState[row]);
+        if (rowSet.size !== 8 || !gridState[row].every(n => n >= 1 && n <= 8)) {
+            alert("Invalid solution! Each row must contain 1-8 exactly once.");
+            return;
+        }
+    }
+    
+    // Check columns - each column must have 1-8 exactly once
+    for (let col = 0; col < 8; col++) {
+        const colValues = [];
+        for (let row = 0; row < 8; row++) {
+            colValues.push(gridState[row][col]);
+        }
+        const colSet = new Set(colValues);
+        if (colSet.size !== 8 || !colValues.every(n => n >= 1 && n <= 8)) {
+            alert("Invalid solution! Each column must contain 1-8 exactly once.");
+            return;
+        }
+    }
+    
+    // Check cages - verify the operation constraint is satisfied
+    for (const cage of cages) {
+        const values = cage.cells.map(([row, col]) => gridState[row][col]);
+        
+        if (!verifyCageOperation(cage.operation, values)) {
+            alert(`Invalid solution! Cage with operation ${cage.operation} is incorrect.`);
+            return;
+        }
+    }
+    
+    alert("Congratulations! You solved the puzzle correctly! 🎉");
+}
+
+function checkAll() {
+    // Clear previous errors
+    errorCells.clear();
+    
+    // Check each cell against the solution
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            if (gridState[row][col] !== 0 && gridState[row][col] !== solutionGrid[row][col]) {
+                errorCells.add(`${row},${col}`);
+            }
+        }
+    }
+    
+    if (errorCells.size === 0) {
+        // Check if puzzle is complete
+        let allFilled = true;
+        for (let row = 0; row < 8; row++) {
+            for (let col = 0; col < 8; col++) {
+                if (gridState[row][col] === 0) {
+                    allFilled = false;
+                    break;
+                }
+            }
+            if (!allFilled) break;
+        }
+        
+        if (allFilled) {
+            alert("Perfect! All cells are correct! 🎉");
+        } else {
+            alert("Looking good so far! Keep going!");
+        }
+    } else {
+        console.log(`${errorCells.size} incorrect cells highlighted in red`);
+    }
+}
+
+function verifyCageOperation(operation, values) {
+    // Extract the operation and target
+    const match = operation.match(/^(\d+)([+\-×÷]?)$/);
+    if (!match) return false;
+    
+    const target = parseInt(match[1]);
+    const op = match[2];
+    
+    if (!op) {
+        // No operation means it's a single cell with fixed value
+        return values.length === 1 && values[0] === target;
+    }
+    
+    switch (op) {
+        case '+':
+            return values.reduce((a, b) => a + b, 0) === target;
+        case '×':
+            return values.reduce((a, b) => a * b, 1) === target;
+        case '−':
+            // Subtraction: difference can be achieved in any order
+            if (values.length !== 2) return false;
+            return Math.abs(values[0] - values[1]) === target;
+        case '÷':
+            // Division: quotient can be achieved in any order
+            if (values.length !== 2) return false;
+            const max = Math.max(values[0], values[1]);
+            const min = Math.min(values[0], values[1]);
+            return min !== 0 && max / min === target;
+        default:
+            return false;
+    }
+}
+
+function clearCell() {
+    if (!selectedCell) {
+        alert("Please select a cell first!");
+        return;
+    }
+    gridState[selectedCell.row][selectedCell.col] = 0;
+    
+    // Clear error highlighting for this cell
+    const cellKey = `${selectedCell.row},${selectedCell.col}`;
+    errorCells.delete(cellKey);
+    
+    console.log(`Cell cleared: row ${selectedCell.row}, col ${selectedCell.col}`);
+}
+
+function helpCell() {
+    if (!selectedCell) {
+        alert("Please select a cell first!");
+        return;
+    }
+    
+    const row = selectedCell.row;
+    const col = selectedCell.col;
+    
+    // Fill in the correct value from the solution grid
+    const correctValue = solutionGrid[row][col];
+    gridState[row][col] = correctValue;
+    
+    // Clear error highlighting for this cell
+    const cellKey = `${row},${col}`;
+    errorCells.delete(cellKey);
+    
+    console.log(`Help applied: row ${row}, col ${col} = ${correctValue}`);
+}
+
+function getCanvasCoordinates(event) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = event.clientX || (event.touches && event.touches[0].clientX);
+    const clientY = event.clientY || (event.touches && event.touches[0].clientY);
+    
+    const x = (clientX - rect.left) * (canvas.width / rect.width);
+    const y = (clientY - rect.top) * (canvas.height / rect.height);
+    
+    const { x: screenW, y: screenH } = screenDimension();
+    const offsetX = (canvasWidth() - screenW) / 2;
+    const offsetY = (canvasHeight() - screenH) / 2;
+    
+    // Convert to screen coordinates
+    const screenX = (x / scale) - offsetX;
+    const screenY = (y / scale) - offsetY;
+    
+    return { x: screenX, y: screenY };
+}
+
+function handleClick(event) {
+    event.preventDefault();
+    const coords = getCanvasCoordinates(event);
+    
+    // Check if click is inside any button
+    for (const button of buttons) {
+        if (coords.x >= button.x && coords.x <= button.x + button.w &&
+            coords.y >= button.y && coords.y <= button.y + button.h) {
+            
+            if (button.type === 'number') {
+                console.log(`Button ${button.label} clicked`);
+                
+                // If a cell is selected, put the number in it
+                if (selectedCell) {
+                    const num = parseInt(button.label);
+                    gridState[selectedCell.row][selectedCell.col] = num;
+                    
+                    // Clear error highlighting for this cell when a new number is entered
+                    const cellKey = `${selectedCell.row},${selectedCell.col}`;
+                    errorCells.delete(cellKey);
+                }
+            } else if (button.type === 'check') {
+                console.log('Check button clicked');
+                checkSolution();
+            } else if (button.type === 'check_all') {
+                console.log('Check All button clicked');
+                checkAll();
+            } else if (button.type === 'clear') {
+                console.log('Clear button clicked');
+                clearCell();
+            } else if (button.type === 'help') {
+                console.log('Help button clicked');
+                helpCell();
+            }
+            return;
+        }
+    }
+    
+    // Check if click is inside the grid
+    if (coords.x >= boardX && coords.x <= boardX + boardSize &&
+        coords.y >= boardY && coords.y <= boardY + boardSize) {
+        
+        const col = Math.floor((coords.x - boardX) / cellSize);
+        const row = Math.floor((coords.y - boardY) / cellSize);
+        
+        if (row >= 0 && row < 8 && col >= 0 && col < 8) {
+            selectedCell = { row, col };
+            console.log(`Cell selected: row ${row}, col ${col}`);
+        }
+    }
+}
+
+// Add event listeners for both mouse and touch
+canvas.addEventListener('click', handleClick);
+canvas.addEventListener('touchstart', handleClick);
+
+function draw() {
+    const { x: screenW, y: screenH } = screenDimension();
+    const isVertical = screenW < screenH;
+    
+    // Clear and reset transform
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawRect({ x: 0, y: 0, w: canvas.width, h: canvas.height, fill: "#317833"});
+    
+    // Calculate offsets to center the content
+    const offsetX = (canvasWidth() - screenW) / 2;
+    const offsetY = (canvasHeight() - screenH) / 2;
+    
+    // Apply scale and translation
+    ctx.scale(scale, scale);
+    ctx.translate(offsetX, offsetY);
+    
+    drawRect({ x: 0, y: 0, w: screenW, h: screenH, fill: "#65bf68" });
+    
+    const titleText = "KenKen for Grey";
+    const titleSize = isVertical ? 30 : 40;
+    const padding = isVertical ? 20 : 100;
+    
+    if (isVertical) {
+        // Vertical layout: title above, board in middle, buttons below
+        
+        // Draw title at top
+        const textMetrics = measureText({ text: titleText, size: titleSize });
+        const textWidth = textMetrics.width;
+        
+        drawText({
+            text: titleText,
+            color: "white",
+            x: (screenW - textWidth) / 2,
+            y: padding + titleSize,
+            size: titleSize
+        });
+        
+        // Draw board below title
+        const buttonHeight = 50;
+        const buttonSpacing = 10;
+        const buttonsHeight = (buttonHeight * 2) + buttonSpacing;
+        const actionButtonHeight = 50;
+        const actionButtonsHeight = (actionButtonHeight * 3) + (buttonSpacing * 2);
+        
+        const availableHeight = screenH - (padding * 5) - titleSize - buttonsHeight - actionButtonsHeight;
+        const maxBoardSize = Math.min(screenW - (padding * 2), availableHeight);
+        const actualBoardSize = maxBoardSize;
+        const gridBoardX = (screenW - actualBoardSize) / 2;
+        const gridBoardY = padding + titleSize + padding;
+        
+        drawGrid({ 
+            x: gridBoardX, 
+            y: gridBoardY, 
+            size: actualBoardSize,
+            gridSize: 8
+        });
+        
+        // Draw number buttons below board
+        const buttonStartY = gridBoardY + actualBoardSize + padding;
+        const buttonWidth = 60;
+        const buttonsPerRow = 4;
+        
+        const totalWidth = (buttonWidth * buttonsPerRow) + (buttonSpacing * (buttonsPerRow - 1));
+        const startX = (screenW - totalWidth) / 2;
+        
+        drawButtons({
+            startX: startX,
+            startY: buttonStartY,
+            buttonWidth: buttonWidth,
+            buttonHeight: buttonHeight,
+            buttonSpacing: buttonSpacing,
+            buttonsPerRow: buttonsPerRow,
+            labelSize: 25
+        });
+        
+        // Draw action buttons below number buttons
+        const actionButtonY = buttonStartY + buttonsHeight + padding;
+        const actionButtonWidth = (totalWidth - buttonSpacing) / 2;
+        
+        // Clear and Help buttons side by side
+        drawActionButton({
+            x: startX,
+            y: actionButtonY,
+            w: actionButtonWidth,
+            h: actionButtonHeight,
+            label: 'Clear',
+            type: 'clear',
+            labelSize: 20
+        });
+        
+        drawActionButton({
+            x: startX + actionButtonWidth + buttonSpacing,
+            y: actionButtonY,
+            w: actionButtonWidth,
+            h: actionButtonHeight,
+            label: 'Help',
+            type: 'help',
+            labelSize: 20
+        });
+        
+        // Check All button
+        const checkAllButtonY = actionButtonY + actionButtonHeight + buttonSpacing;
+        drawActionButton({
+            x: startX,
+            y: checkAllButtonY,
+            w: totalWidth,
+            h: actionButtonHeight,
+            label: 'Check All',
+            type: 'check_all',
+            labelSize: 23
+        });
+        
+        // Check button below
+        const checkButtonY = checkAllButtonY + actionButtonHeight + buttonSpacing;
+        drawActionButton({
+            x: startX,
+            y: checkButtonY,
+            w: totalWidth,
+            h: actionButtonHeight,
+            label: 'Check',
+            type: 'check',
+            labelSize: 25
+        });
+        
+    } else {
+        // Horizontal layout: board on left, title and buttons on right
+        
+        const availableBoardSize = screenH - (padding * 2);
+        const gridBoardX = padding;
+        const gridBoardY = padding;
+        
+        drawGrid({ 
+            x: gridBoardX, 
+            y: gridBoardY, 
+            size: availableBoardSize,
+            gridSize: 8
+        });
+        
+        const rightSideX = gridBoardX + availableBoardSize + padding;
+        const rightSideWidth = screenW - rightSideX - padding;
+        
+        const textMetrics = measureText({ text: titleText, size: titleSize });
+        const textWidth = textMetrics.width;
+        
+        drawText({
+            text: titleText,
+            color: "white",
+            x: rightSideX + (rightSideWidth - textWidth) / 2,
+            y: padding + titleSize,
+            size: titleSize
+        });
+        
+        // Draw 8 number buttons beneath the title
+        const buttonStartY = padding + titleSize + 40;
+        const buttonWidth = 60;
+        const buttonHeight = 60;
+        const buttonSpacing = 10;
+        const buttonsPerRow = 4;
+        
+        const totalWidth = (buttonWidth * buttonsPerRow) + (buttonSpacing * (buttonsPerRow - 1));
+        const startX = rightSideX + (rightSideWidth - totalWidth) / 2;
+        
+        drawButtons({
+            startX: startX,
+            startY: buttonStartY,
+            buttonWidth: buttonWidth,
+            buttonHeight: buttonHeight,
+            buttonSpacing: buttonSpacing,
+            buttonsPerRow: buttonsPerRow,
+            labelSize: 30
+        });
+        
+        // Draw action buttons below number buttons
+        const actionButtonY = buttonStartY + (buttonHeight * 2) + buttonSpacing + 20;
+        const actionButtonHeight = 50;
+        const actionButtonWidth = (totalWidth - buttonSpacing) / 2;
+        
+        // Clear and Help buttons side by side
+        drawActionButton({
+            x: startX,
+            y: actionButtonY,
+            w: actionButtonWidth,
+            h: actionButtonHeight,
+            label: 'Clear',
+            type: 'clear',
+            labelSize: 25
+        });
+        
+        drawActionButton({
+            x: startX + actionButtonWidth + buttonSpacing,
+            y: actionButtonY,
+            w: actionButtonWidth,
+            h: actionButtonHeight,
+            label: 'Help',
+            type: 'help',
+            labelSize: 25
+        });
+        
+        // Check All button
+        const checkAllButtonY = actionButtonY + actionButtonHeight + buttonSpacing;
+        drawActionButton({
+            x: startX,
+            y: checkAllButtonY,
+            w: totalWidth,
+            h: actionButtonHeight,
+            label: 'Check All',
+            type: 'check_all',
+            labelSize: 28
+        });
+        
+        // Check button below
+        const checkButtonY = checkAllButtonY + actionButtonHeight + buttonSpacing;
+        drawActionButton({
+            x: startX,
+            y: checkButtonY,
+            w: totalWidth,
+            h: actionButtonHeight,
+            label: 'Check',
+            type: 'check',
+            labelSize: 30
+        });
+    }
+    
+    requestAnimationFrame(draw);
+}
+
+// Initialize the puzzle when the page loads
+initializePuzzle();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
