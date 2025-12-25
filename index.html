@@ -42,6 +42,14 @@ let solutionGrid = [];
 // KenKen groups (cages)
 let cages = [];
 
+// Load image
+const rpImage = new Image();
+rpImage.src = 'rp.png';
+let imageLoaded = false;
+rpImage.onload = () => {
+    imageLoaded = true;
+};
+
 // Generate a random valid Latin Square (each row/column has 1-8 exactly once)
 function generateLatinSquare() {
     const grid = [];
@@ -528,7 +536,7 @@ function checkSolution() {
     for (let row = 0; row < 8; row++) {
         for (let col = 0; col < 8; col++) {
             if (gridState[row][col] === 0) {
-                alert("Please fill all cells!");
+                alert("KEEP GOING.");
                 return;
             }
         }
@@ -538,7 +546,7 @@ function checkSolution() {
     for (let row = 0; row < 8; row++) {
         const rowSet = new Set(gridState[row]);
         if (rowSet.size !== 8 || !gridState[row].every(n => n >= 1 && n <= 8)) {
-            alert("Invalid solution! Each row must contain 1-8 exactly once.");
+            alert(`Duplicate number in row ${row + 1}.`);
             return;
         }
     }
@@ -551,7 +559,7 @@ function checkSolution() {
         }
         const colSet = new Set(colValues);
         if (colSet.size !== 8 || !colValues.every(n => n >= 1 && n <= 8)) {
-            alert("Invalid solution! Each column must contain 1-8 exactly once.");
+            alert(`Duplicate number in column ${col + 1}.`);
             return;
         }
     }
@@ -561,12 +569,13 @@ function checkSolution() {
         const values = cage.cells.map(([row, col]) => gridState[row][col]);
         
         if (!verifyCageOperation(cage.operation, values)) {
-            alert(`Invalid solution! Cage with operation ${cage.operation} is incorrect.`);
+            const [firstRow, firstCol] = cage.cells[0];
+            alert(`Group at (${firstRow + 1}, ${firstCol + 1}) with operation ${cage.operation} is incorrect.`);
             return;
         }
     }
     
-    alert("Congratulations! You solved the puzzle correctly! 🎉");
+    alert("YOU DID IT. RP IS PROUD.");
 }
 
 function checkAll() {
@@ -596,9 +605,9 @@ function checkAll() {
         }
         
         if (allFilled) {
-            alert("Perfect! All cells are correct! 🎉");
+            alert("YOU DID IT. RP IS PROUD.");
         } else {
-            alert("Looking good so far! Keep going!");
+            alert("MEOW. KEEP GOING.");
         }
     } else {
         console.log(`${errorCells.size} incorrect cells highlighted in red`);
@@ -640,7 +649,7 @@ function verifyCageOperation(operation, values) {
 
 function clearCell() {
     if (!selectedCell) {
-        alert("Please select a cell first!");
+        alert("Select a cell to clear it.");
         return;
     }
     gridState[selectedCell.row][selectedCell.col] = 0;
@@ -654,7 +663,7 @@ function clearCell() {
 
 function helpCell() {
     if (!selectedCell) {
-        alert("Please select a cell first!");
+        alert("Select a cell.");
         return;
     }
     
@@ -765,6 +774,7 @@ function draw() {
     ctx.translate(offsetX, offsetY);
     
     drawRect({ x: 0, y: 0, w: screenW, h: screenH, fill: "#65bf68" });
+    
     
     const titleText = "KenKen for Grey";
     const titleSize = isVertical ? 30 : 40;
@@ -969,6 +979,14 @@ function draw() {
             type: 'check',
             labelSize: 30
         });
+    }
+
+    if (imageLoaded) {
+        const imgWidth = 150;
+        const imgHeight = 150;
+        const x = screenW - imgWidth;
+        const y = screenH - imgHeight;
+        ctx.drawImage(rpImage, x, y, imgWidth, imgHeight);
     }
     
     requestAnimationFrame(draw);
